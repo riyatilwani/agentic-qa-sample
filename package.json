@@ -1,6 +1,6 @@
 {
   "name": "agentic-qa-sample",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Sample React+Express app for Agentic QA pipeline demo",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"npm run client\"",
