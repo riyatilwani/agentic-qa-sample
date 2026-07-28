@@ -24,6 +24,9 @@ jobs:
         run: git fetch origin "${{ github.base_ref || 'main' }}" --depth=1
 
       - name: Build QA evidence packet
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'llama-3.3-70b-versatile' }}
         run: node scripts/agentic-qa.js
 
       - name: Upload QA report
