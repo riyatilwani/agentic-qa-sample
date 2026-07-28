@@ -16,10 +16,22 @@ function eventPayload() {
 }
 
 function changedFiles(baseRef) {
+  const baseParent = sh("git", ["rev-parse", "--verify", "HEAD^1"]);
+  if (baseParent) {
+    const mergeDiff = sh("git", ["diff", "--numstat", "HEAD^1", "HEAD"]);
+    if (mergeDiff) {
+      return parseNumstat(mergeDiff);
+    }
+  }
+
   const base = baseRef ? `origin/${baseRef}` : "origin/main";
   const numstat = sh("git", ["diff", "--numstat", `${base}...HEAD`]);
   if (!numstat) return [];
 
+  return parseNumstat(numstat);
+}
+
+function parseNumstat(numstat) {
   return numstat.split("\n").filter(Boolean).map((line) => {
     const [additions, deletions, file] = line.split("\t");
     return {
