@@ -4,6 +4,10 @@ const { execFileSync } = require("child_process");
 const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
 const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function sh(command, args) {
   try {
     return execFileSync(command, args, { encoding: "utf8" }).trim();
@@ -172,42 +176,52 @@ async function callGroqAgent(agent, mission, context, schemaHint) {
     throw new Error("GROQ_API_KEY is not configured");
   }
 
-  const response = await fetch(GROQ_ENDPOINT, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      temperature: 0.1,
-      max_tokens: 1000,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: [
-            `You are ${agent}, one role in an agentic SDLC QA workflow.`,
-            "You must make engineering decisions from supplied evidence, not generic advice.",
-            "Return valid JSON only. Do not include markdown.",
-            "Do not invent files or tool results. If evidence is insufficient, say so in JSON."
-          ].join(" ")
-        },
-        {
-          role: "user",
-          content: JSON.stringify({ mission, schemaHint, context })
-        }
-      ]
-    })
-  });
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const response = await fetch(GROQ_ENDPOINT, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        temperature: 0.1,
+        max_tokens: 750,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "system",
+            content: [
+              `You are ${agent}, one role in an agentic SDLC QA workflow.`,
+              "Use supplied evidence to make a concrete engineering decision.",
+              "Return concise valid JSON only. Do not include markdown.",
+              "Do not invent files or tool results."
+            ].join(" ")
+          },
+          {
+            role: "user",
+            content: JSON.stringify({ mission, schemaHint, context })
+          }
+        ]
+      })
+    });
 
-  if (!response.ok) {
+    if (response.ok) {
+      const json = await response.json();
+      return extractJson(json.choices[0].message.content);
+    }
+
     const body = await response.text();
+    if (response.status === 429 && attempt < 3) {
+      const waitSeconds = Number(/try again in ([0-9.]+)s/i.exec(body)?.[1] || 8);
+      await sleep(Math.ceil(waitSeconds * 1000) + 1000);
+      continue;
+    }
+
     throw new Error(`Groq ${agent} failed: ${response.status} ${body.slice(0, 240)}`);
   }
 
-  const json = await response.json();
-  return extractJson(json.choices[0].message.content);
+  throw new Error(`Groq ${agent} failed after retries`);
 }
 
 function fallbackCoordinator(context) {
