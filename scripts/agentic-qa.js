@@ -107,7 +107,23 @@ function analyze(contents) {
         finding: "Secret material reaches logs."
       });
     }
-    if (/paymentIntents\.create\(/.test(content) && !/idempotency/i.test(content)) {
+    if (/sk_(live|test)_[A-Za-z0-9_]+/.test(content)) {
+      findings.push({
+        agent: "Security Reviewer",
+        severity: "critical",
+        file,
+        finding: "Stripe key is hardcoded in source."
+      });
+    }
+    if (/paymentIntent|client_secret|card|fingerprint/i.test(content) && /console\.(log|error)\(/.test(content)) {
+      findings.push({
+        agent: "Security Reviewer",
+        severity: "warning",
+        file,
+        finding: "Payment object or error details are logged from payment flow."
+      });
+    }
+    if (/paymentIntents\.create\(/.test(content) && !/idempotencyKey/.test(content)) {
       findings.push({
         agent: "Release Risk Reviewer",
         severity: "critical",
@@ -115,7 +131,7 @@ function analyze(contents) {
         finding: "Payment intent creation lacks idempotency protection."
       });
     }
-    if (/for\s*\([^)]*\)\s*{[\s\S]{0,500}db\.\w+\.findMany\(/.test(content)) {
+    if (/for\s*\([^)]*\)\s*{[\s\S]{0,800}(db\.\w+\.findMany\(|pool\.query\()/.test(content)) {
       findings.push({
         agent: "Performance Reviewer",
         severity: "critical",
@@ -123,7 +139,7 @@ function analyze(contents) {
         finding: "Database read inside loop creates N+1 query risk."
       });
     }
-    if (/(DEV_SECRET|sk_test_placeholder|JWT_SECRET\s*\|\|)/.test(content)) {
+    if (/(DEV_SECRET|sk_test_placeholder|JWT_SECRET\s*\|\||hardcoded-session-secret|secret:\s*['"][^'"]*secret[^'"]*['"])/.test(content)) {
       findings.push({
         agent: "Security Reviewer",
         severity: "critical",
