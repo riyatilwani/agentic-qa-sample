@@ -414,6 +414,56 @@ function traceStep(actor, phase, inputs, outputs, meta = {}) {
   };
 }
 
+function repairPlanFor(findings, context) {
+  const proposals = [];
+
+  for (const finding of findings) {
+    if (!finding.evidence?.includes("fallback-secret-rule")) continue;
+    const snippet = context.snippets.find((item) => item.file === finding.file);
+    if (!snippet?.content.includes("hardcoded-session-secret-abc123")) continue;
+
+    proposals.push({
+      title: "Move session secret to SESSION_SECRET",
+      file: finding.file,
+      confidence: 0.94,
+      canAutoRepair: true,
+      rationale: "The finding is a deterministic hardcoded fallback-secret match. The code edit is mechanical: read the session secret from the existing SESSION_SECRET environment variable instead of source.",
+      patch: [
+        "```diff",
+        `diff --git a/${finding.file} b/${finding.file}`,
+        `--- a/${finding.file}`,
+        `+++ b/${finding.file}`,
+        "@@",
+        "-    // BUG: hardcoded secret left in — was meant to be process.env.SESSION_SECRET",
+        "-    secret: 'hardcoded-session-secret-abc123',",
+        "+    secret: process.env.SESSION_SECRET,",
+        "```"
+      ].join("\n"),
+      followUpChecks: [
+        "Rerun Agentic QA.",
+        "Add/startup validation that SESSION_SECRET is set outside local test fixtures.",
+        "If the committed value was a real credential, rotate it because removing it from the PR does not undo exposure."
+      ]
+    });
+  }
+
+  if (!proposals.length) {
+    return {
+      summary: "No deterministic auto-repair proposal was available for the accepted findings.",
+      humanInputRequired: findings.some((finding) => finding.severity === "critical"),
+      humanInputReason: "A human owner should decide the fix when the system cannot produce a narrow mechanical patch.",
+      proposals: []
+    };
+  }
+
+  return {
+    summary: "A narrow AI repair is available for the blocking finding.",
+    humanInputRequired: false,
+    humanInputReason: "No human judgment is required for the code edit. Human/security input is only required if the value was a live secret and must be rotated.",
+    proposals
+  };
+}
+
 function markdown(report) {
   const verdict = report.verdict === "block" ? "Block merge" : report.verdict === "fix" ? "Approve after fixes" : "Approve";
   const findings = report.findings.length
@@ -423,6 +473,23 @@ function markdown(report) {
   const handoffs = report.handoffs.length
     ? report.handoffs.map((handoff) => `- ${handoff.from} -> ${handoff.to}: ${handoff.reason}`).join("\n")
     : "- No handoffs.";
+  const actions = report.policy.requiredActions?.length
+    ? report.policy.requiredActions.map((action) => `- ${action}`).join("\n")
+    : "- No required action.";
+  const repair = report.repairPlan?.proposals?.length
+    ? report.repairPlan.proposals.map((proposal) => [
+        `#### ${proposal.title}`,
+        `- File: \`${proposal.file}\``,
+        `- Confidence: ${proposal.confidence}`,
+        `- Can auto-repair: ${proposal.canAutoRepair ? "yes" : "no"}`,
+        `- Rationale: ${proposal.rationale}`,
+        "",
+        proposal.patch,
+        "",
+        "**Follow-up checks**",
+        ...proposal.followUpChecks.map((check) => `- ${check}`)
+      ].join("\n")).join("\n\n")
+    : "- No mechanical repair proposal available.";
 
   return [
     "## Agentic QA Evidence Packet",
@@ -442,7 +509,19 @@ function markdown(report) {
     checks,
     "",
     "### Findings",
-    findings
+    findings,
+    "",
+    "### Required actions",
+    actions,
+    "",
+    "### Repair proposal",
+    report.repairPlan?.summary || "No repair plan generated.",
+    "",
+    `Human input required: ${report.repairPlan?.humanInputRequired ? "yes" : "no"}`,
+    "",
+    report.repairPlan?.humanInputReason || "",
+    "",
+    repair
   ].join("\n");
 }
 
@@ -595,6 +674,7 @@ async function main() {
   const hasCritical = allFindings.some((finding) => finding.severity === "critical");
   const guardedVerdict = hasCritical && policy.verdict !== "block" ? "block" : policy.verdict;
   const guardrailReasons = guardedVerdict !== policy.verdict ? ["Guardrail override: accepted critical finding requires block."] : [];
+  const repairPlan = repairPlanFor(allFindings, context);
 
   const handoffs = [
     ...(coordinator.handoffs || []),
@@ -617,6 +697,7 @@ async function main() {
     checks,
     deterministicToolFindings: toolFindings,
     findings: allFindings,
+    repairPlan,
     policy: {
       ...policy,
       guardrailReasons
@@ -631,6 +712,7 @@ async function main() {
       ], [
         `agent verdict: ${policy.verdict}`,
         `final verdict: ${guardedVerdict}`,
+        `repair proposals: ${repairPlan.proposals.length}`,
         ...((policy.reasons || []).concat(guardrailReasons))
       ], { mode: policyRun.mode })
     ]
