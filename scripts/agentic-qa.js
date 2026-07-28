@@ -3,6 +3,13 @@ const { execFileSync } = require("child_process");
 
 const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
 const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
+const PRIMARY_AGENTS = [
+  "Test Strategist",
+  "Security Reviewer",
+  "Performance Reviewer",
+  "Accessibility + Visual Reviewer"
+];
+const SECONDARY_AGENTS = ["Failure Triage", "Release Risk Reviewer"];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -158,6 +165,68 @@ function compactContext({ pullRequest, files, contents, toolFindings, checks }) 
     })),
     deterministicToolFindings: toolFindings,
     checks
+  };
+}
+
+function isDocsOnly(files) {
+  return files.length > 0 && files.every(({ file }) => /(^|\/)(README|CHANGELOG|LICENSE)|\.md$|package\.json$/i.test(file));
+}
+
+function routeHints(context) {
+  const names = context.changedFiles.map((item) => item.file).join(" ").toLowerCase();
+  const hints = context.deterministicToolFindings.map((finding) => `${finding.agentHint || ""} ${finding.finding || ""}`).join(" ").toLowerCase();
+  return {
+    security: /(auth|jwt|token|payment|stripe|secret|config|env|middleware|dependency|permission)/.test(names) || /security reviewer|secret|payment|auth|token/.test(hints),
+    performance: /(dashboard|route|server|db|database|query|cache|pagination|worker|queue)/.test(names) || /performance reviewer|query|latency|n\+1|payload/.test(hints),
+    visual: /(component|page|jsx|tsx|css|scss|ui|browser|route|view)/.test(names) || /accessibility|visual|browser|axe|screenshot/.test(hints)
+  };
+}
+
+function normalizeCoordinatorDecision(rawDecision, context) {
+  const decision = rawDecision && typeof rawDecision === "object" ? rawDecision : {};
+  const docsOnly = isDocsOnly(context.changedFiles);
+  const hints = routeHints(context);
+  const routed = new Set((decision.routeAgents || []).filter((agent) => PRIMARY_AGENTS.includes(agent)));
+
+  if (docsOnly && !context.deterministicToolFindings.length) {
+    routed.clear();
+  } else {
+    routed.add("Test Strategist");
+    if (hints.security) routed.add("Security Reviewer");
+    if (hints.performance) routed.add("Performance Reviewer");
+    if (hints.visual) routed.add("Accessibility + Visual Reviewer");
+  }
+
+  const routeAgents = ["Coordinator", ...PRIMARY_AGENTS.filter((agent) => routed.has(agent))];
+  const fallbackRisk = fallbackCoordinator(context).risk;
+  const risk = {
+    tier: decision.risk?.tier || fallbackRisk.tier,
+    reasons: Array.isArray(decision.risk?.reasons) && decision.risk.reasons.length
+      ? decision.risk.reasons
+      : fallbackRisk.reasons
+  };
+  const handoffs = Array.isArray(decision.handoffs)
+    ? decision.handoffs.filter((handoff) => handoff?.from === "Coordinator" && routeAgents.includes(handoff.to))
+    : [];
+  const existingTargets = new Set(handoffs.map((handoff) => handoff.to));
+
+  for (const agent of routeAgents.filter((agent) => agent !== "Coordinator")) {
+    if (!existingTargets.has(agent)) {
+      handoffs.push({
+        from: "Coordinator",
+        to: agent,
+        reason: agent === "Test Strategist"
+          ? "Policy requires test coverage analysis for every non-trivial code PR."
+          : "Changed files and deterministic evidence match this specialist surface."
+      });
+    }
+  }
+
+  return {
+    ...decision,
+    risk,
+    routeAgents,
+    handoffs
   };
 }
 
@@ -420,7 +489,8 @@ async function main() {
     },
     () => fallbackCoordinator(context)
   );
-  const coordinator = coordinatorRun.output;
+  const coordinator = normalizeCoordinatorDecision(coordinatorRun.output, context);
+  coordinatorRun.output = coordinator;
   agentRuns.push({ agent: "Coordinator", ...coordinatorRun });
   trace.push(traceStep("Coordinator", "tiering", files.map((file) => file.file), [
     `${coordinator.risk.tier.toUpperCase()} tier`,
@@ -428,7 +498,7 @@ async function main() {
     `route: ${(coordinator.routeAgents || []).join(", ")}`
   ], { mode: coordinatorRun.mode }));
 
-  const primaryAgents = [...new Set((coordinator.routeAgents || []).filter((agent) => agent !== "Coordinator"))];
+  const primaryAgents = [...new Set((coordinator.routeAgents || []).filter((agent) => PRIMARY_AGENTS.includes(agent)))];
   const specialistOutputs = [];
   for (const agent of primaryAgents) {
     const run = await runAgent(
@@ -481,7 +551,7 @@ async function main() {
     `next: ${(critic.nextAgents || []).join(", ") || "none"}`
   ], { mode: criticRun.mode }));
 
-  const secondaryAgents = [...new Set(critic.nextAgents || [])];
+  const secondaryAgents = [...new Set((critic.nextAgents || []).filter((agent) => SECONDARY_AGENTS.includes(agent)))];
   const secondaryOutputs = [];
   for (const agent of secondaryAgents) {
     const run = await runAgent(
