@@ -1,7 +1,7 @@
 const fs = require("fs");
 const { execFileSync } = require("child_process");
 
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
 const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
 function sh(command, args) {
@@ -181,7 +181,7 @@ async function callGroqAgent(agent, mission, context, schemaHint) {
     body: JSON.stringify({
       model: GROQ_MODEL,
       temperature: 0.1,
-      max_tokens: 1800,
+      max_tokens: 1000,
       response_format: { type: "json_object" },
       messages: [
         {
