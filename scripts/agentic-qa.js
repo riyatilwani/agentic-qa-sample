@@ -166,6 +166,14 @@ function agentsFor(tier, files, findings) {
   return [...agents];
 }
 
+function fileMatchesAgent(file, agent) {
+  const lower = `${file} ${agent}`.toLowerCase();
+  if (agent.includes("Security")) return /(auth|jwt|token|payment|stripe|secret|config|env|middleware)/.test(lower);
+  if (agent.includes("Performance")) return /(dashboard|route|server|db|database|query)/.test(lower);
+  if (agent.includes("Accessibility")) return /(component|page|jsx|tsx|ui)/.test(lower);
+  return true;
+}
+
 function checksFor(findings) {
   const checks = [
     { name: "lint", status: "pass", evidence: "No syntax blockers detected by repository QA runner." },
@@ -188,6 +196,62 @@ function verdictFor(findings) {
   if (findings.some((finding) => finding.severity === "critical")) return "block";
   if (findings.length) return "fix";
   return "approve";
+}
+
+function traceFor(report) {
+  const files = report.changedFiles.map((file) => file.file);
+  const trace = [
+    {
+      actor: "PR Context Loader",
+      phase: "intake",
+      inputs: [
+        `PR #${report.pullRequest.number || "manual"} ${report.pullRequest.title || ""}`.trim(),
+        report.pullRequest.headSha ? `head ${report.pullRequest.headSha.slice(0, 7)}` : "head SHA unavailable"
+      ],
+      outputs: [
+        `${report.changedFiles.length} changed file(s)`,
+        `${report.changedFiles.reduce((sum, file) => sum + file.additions + file.deletions, 0)} changed line(s)`,
+        ...files
+      ]
+    },
+    {
+      actor: "Coordinator",
+      phase: "tiering",
+      inputs: files,
+      outputs: [
+        `${report.risk.tier.toUpperCase()} tier`,
+        ...report.risk.reasons,
+        `routed agents: ${report.agents.join(", ")}`
+      ]
+    }
+  ];
+
+  for (const agent of report.agents.filter((name) => name !== "Coordinator")) {
+    const inputs = files.filter((file) => fileMatchesAgent(file, agent));
+    const outputs = report.findings
+      .filter((finding) => finding.agent === agent)
+      .map((finding) => `${finding.severity}: ${finding.finding}`);
+
+    trace.push({
+      actor: agent,
+      phase: "specialist",
+      inputs: inputs.length ? inputs : ["routed for coverage; no matching high-risk file pattern"],
+      outputs: outputs.length ? outputs : ["no finding emitted"]
+    });
+  }
+
+  trace.push({
+    actor: "Policy Synthesizer",
+    phase: "verdict",
+    inputs: [
+      `${report.checks.length} check(s)`,
+      `${report.findings.length} finding(s)`,
+      `${report.findings.filter((finding) => finding.severity === "critical").length} critical finding(s)`
+    ],
+    outputs: [`verdict: ${report.verdict}`]
+  });
+
+  return trace;
 }
 
 function markdown(report) {
@@ -237,6 +301,8 @@ const report = {
   findings,
   verdict: verdictFor(findings)
 };
+
+report.trace = traceFor(report);
 
 fs.writeFileSync("qa-report.json", `${JSON.stringify(report, null, 2)}\n`);
 fs.writeFileSync("qa-comment.md", `${markdown(report)}\n`);
