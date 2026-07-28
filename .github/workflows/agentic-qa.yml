@@ -1,0 +1,77 @@
+name: Agentic QA
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  agentic-qa:
+    name: Agentic QA evidence packet
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin "${{ github.base_ref || 'main' }}" --depth=1
+
+      - name: Build QA evidence packet
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'llama-3.1-8b-instant' }}
+        run: node scripts/agentic-qa.js
+
+      - name: Upload QA report
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: |
+            qa-report.json
+            qa-comment.md
+
+      - name: Upsert PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const marker = "<!-- agentic-qa-report -->";
+            const body = `${marker}\n${fs.readFileSync("qa-comment.md", "utf8")}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+            const existing = comments.data.find((comment) =>
+              comment.user.type === "Bot" && comment.body.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body
+              });
+            }
+
+      - name: Enforce QA verdict
+        run: |
+          node -e "const report = require('./qa-report.json'); if (report.verdict === 'block') { console.error('Agentic QA blocked merge'); process.exit(1); }"
