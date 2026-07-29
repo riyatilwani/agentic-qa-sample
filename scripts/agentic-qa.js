@@ -416,11 +416,15 @@ function traceStep(actor, phase, inputs, outputs, meta = {}) {
 
 function repairPlanFor(findings, context) {
   const proposals = [];
+  const repairSources = [
+    ...findings.filter((finding) => finding.evidence?.includes("fallback-secret-rule")),
+    ...context.deterministicToolFindings.filter((finding) => finding.source === "fallback-secret-rule")
+  ];
 
-  for (const finding of findings) {
-    if (!finding.evidence?.includes("fallback-secret-rule")) continue;
+  for (const finding of repairSources) {
     const snippet = context.snippets.find((item) => item.file === finding.file);
     if (!snippet?.content.includes("hardcoded-session-secret-abc123")) continue;
+    if (proposals.some((proposal) => proposal.file === finding.file)) continue;
 
     proposals.push({
       title: "Move session secret to SESSION_SECRET",
