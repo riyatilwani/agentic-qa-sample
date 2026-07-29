@@ -634,7 +634,25 @@ async function main() {
     `next: ${(critic.nextAgents || []).join(", ") || "none"}`
   ], { mode: criticRun.mode }));
 
-  const secondaryAgents = [...new Set((critic.nextAgents || []).filter((agent) => SECONDARY_AGENTS.includes(agent)))];
+  // Guardrail, mirroring the verdict guardrail further down: Failure Triage
+  // and Release Risk Reviewer are for escalation, not routine review, and
+  // each run costs a real LLM call. The model can return nextAgents
+  // optimistically even on a clean, findings-free PR (observed on a trivial
+  // docs-only PR with zero accepted findings) — unlike the final verdict,
+  // this routing decision had no guardrail forcing it back to reality. It
+  // now only actually spawns a secondary agent when there's a real accepted
+  // critical finding or a failed deterministic check to escalate.
+  const requestedSecondary = [...new Set((critic.nextAgents || []).filter((agent) => SECONDARY_AGENTS.includes(agent)))];
+  const criticHasCritical = (critic.acceptedFindings || []).some((finding) => finding.severity === "critical");
+  const hasFailedCheck = checks.some((check) => check.status !== "pass");
+  const secondaryAgents = criticHasCritical || hasFailedCheck ? requestedSecondary : [];
+  if (requestedSecondary.length && !secondaryAgents.length) {
+    trace.push(traceStep("Critic", "guardrail", [
+      `model requested: ${requestedSecondary.join(", ")}`
+    ], [
+      "no accepted critical finding or failed check — secondary escalation suppressed"
+    ]));
+  }
   const secondaryOutputs = [];
   for (const agent of secondaryAgents) {
     const run = await runAgent(
