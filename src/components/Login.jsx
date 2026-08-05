@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+import { saveSession } from '../utils/session';
 
 export default function Login({ onLogin }) {
   const [email, setEmail] = useState('');
@@ -10,6 +11,7 @@ export default function Login({ onLogin }) {
     e.preventDefault();
     try {
       const res = await axios.post('/api/auth/login', { email, password });
+      saveSession(res.data.token);
       onLogin(res.data.user);
     } catch (err) {
       setError('Login failed');
