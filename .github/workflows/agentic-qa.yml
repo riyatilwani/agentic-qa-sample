@@ -9,6 +9,14 @@ permissions:
   contents: read
   pull-requests: write
 
+# A push while a run is still in flight (synchronize retriggers this) would
+# otherwise spawn a second run racing the first to write qa-report.json and
+# post/update the PR comment — the classic multi-agent-collision failure mode
+# in miniature. One in-flight run per PR; a newer push cancels the older one.
+concurrency:
+  group: agentic-qa-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   agentic-qa:
     name: Agentic QA evidence packet
